@@ -1351,6 +1351,44 @@ class CustomWinAPIs():
         logged_calls= ("RegisterRawInputDevices", hex(callAddr), (retValStr), 'BOOL', pVals, pTypes, pNames, False)
         return logged_calls, stackCleanup(uc, em, esp, len(pTypes))
 
+    def ExpandEnvironmentStringsW(self, uc: Uc, eip: int, esp: int,
+                                  export_dict: dict, callAddr: int, em: EMU):
+        # Windows signature: DWORD ExpandEnvironmentStringsW(
+        #    LPCWSTR lpSrc, LPWSTR lpDst, DWORD nSize)
+
+        pTypes = ['LPCWSTR', 'LPWSTR', 'DWORD']
+        pNames = ['lpSrc', 'lpDst', 'nSize']
+
+        rawVals = makeArgVals(uc, em, esp, len(pTypes))
+        src_addr = rawVals[0]
+        dst_addr = rawVals[1]
+        nSize    = rawVals[2]
+
+        src_str = read_unicode_extended(uc, src_addr)
+
+        expanded = src_str
+        expanded = expanded.replace('%APPDATA%', r'C:\Users\User\AppData\Roaming')
+
+        try:
+            writeUnicodeStrToMemory(uc, dst_addr, expanded)
+        except Exception:
+            pass
+
+        retVal = len(expanded)
+        uc.reg_write(UC_X86_REG_EAX, retVal)
+        retValStr = hex(retVal)
+
+        pTypes_disp, pVals_disp = findStringsParms(
+            uc, pTypes.copy(), rawVals.copy(), skip=[]
+        )
+        pVals_disp[1] = expanded
+
+        logged_calls = (
+            "ExpandEnvironmentStringsW", hex(callAddr), retValStr,
+            'DWORD', pVals_disp, pTypes_disp, pNames, False
+        )
+        return logged_calls, stackCleanup(uc, em, esp, len(pTypes))
+
     def FreeEnvironmentStringsW(self, uc: Uc, eip: int, esp: int, export_dict: dict, callAddr: int, em: EMU):
         pTypes= ['LPWCH']
         pNames= ['penv']
@@ -2658,8 +2696,11 @@ class CustomWinAPIs():
         pTypes, pVals = findStringsParms(uc, pTypes, pVals, skip=[])
         origin = pVals[1]
         destination = pVals[2]
-        SimFileSystem.internetDownload(destination)
-        
+        # guard the filesystem call
+        try:
+            SimFileSystem.internetDownload(destination)
+        except Exception:
+            pass        
         retVal = 0x0
         retValStr = 'S_OK'
         uc.reg_write(UC_X86_REG_EAX, retVal)
