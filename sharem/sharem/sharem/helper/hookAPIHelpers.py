@@ -104,7 +104,7 @@ def findStringsParms(uc: Uc, pTypes: 'list[str]', pVals: 'list', skip: 'list[int
                 try:
                     # print ("looking", i, pTypes[i], pVals[i])
                     if "WSTR" in pTypes[i]:
-                        pVals[i] = read_unicode(uc, pVals[i])
+                        pVals[i] = read_unicode_extended(uc, pVals[i])
                     else:
                         pVals[i] = read_string(uc, pVals[i])
                     # print (pVals[i],"*")
@@ -114,12 +114,12 @@ def findStringsParms(uc: Uc, pTypes: 'list[str]', pVals: 'list', skip: 'list[int
             elif "PCHAR" in pTypes[i]:
                 pVals[i] = read_string(uc, pVals[i])
             elif "PWCHAR" in pTypes[i]:
-                pVals[i] = read_unicode(uc, pVals[i])
+                pVals[i] = read_unicode_extended(uc, pVals[i])
             elif "char *" in pTypes[i]:
                 try:
                     # print ("looking", i, pTypes[i], pVals[i])
                     if "wchar" in pTypes[i]:
-                        pVals[i] = read_unicode(uc, pVals[i])
+                        pVals[i] = read_unicode_extended(uc, pVals[i])
                     else:
                         pVals[i] = read_string(uc, pVals[i])
                     # print (pVals[i],"*")
@@ -198,23 +198,27 @@ def read_unicode(uc: Uc, address: int):
     ret = ret.rstrip('\x00')
     return ret
 
-def read_unicode_extended(uc: Uc, address: int): # Able to read more utf-16 chars
+def read_unicode_extended(uc: Uc, address: int):
+    """Read a UTF-16LE null-terminated string from emulated memory."""
     ret = ""
-    mem = uc.mem_read(address, 2)[::-1]
-    read_bytes = 2
+    read_bytes = 0
 
-    unicodeString = str(hex(mem[0])) + str(hex(mem[1])[2::])
-    unicodeInt = int(unicodeString, 0)
-
-    if unicodeInt == 0x0000: ret="[NULL]" # Option for NULL String
-
-    while unicodeInt != 0x0000:
-        ret += chr(unicodeInt)
-        mem = uc.mem_read(address + read_bytes, 2)[::-1]
-        unicodeString = str(hex(mem[0])) + str(hex(mem[1])[2::])
-        unicodeInt = int(unicodeString, 0)
+    while True:
+        try:
+            mem = bytes(uc.mem_read(address + read_bytes, 2))
+        except Exception:
+            break
+        char = mem[0] | (mem[1] << 8)
+        if char == 0x0000:
+            break
+        try:
+            ret += chr(char)
+        except (ValueError, OverflowError):
+            ret += '?'
         read_bytes += 2
 
+    if ret == "":
+        return "[NULL]"
     return ret
 
 def buildPtrString(pointer: int, val: int):
