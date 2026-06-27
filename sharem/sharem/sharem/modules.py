@@ -10,6 +10,22 @@ from sharem.sharem.helper.variable import Variables
 
 platformType = platform.uname()[0]
 
+def _ci_path(directory, filename):
+    """Case-insensitive file lookup - returns full path if found, else None."""
+    direct = os.path.join(directory, filename)
+    if os.path.exists(direct):
+        return direct
+    if platformType != "Windows":
+        try:
+            ci = {f.lower(): f for f in os.listdir(directory)}
+            actual = ci.get(filename.lower())
+            if actual:
+                return os.path.join(directory, actual)
+        except OSError:
+            pass
+    return None
+
+
 class winReleases():        
     def __init__(self):
         self.win10ReverseLookupHex={"4A64": "21H2", "4A65": "22H2", "4A63": "21H1", "4A62": "20H2", "4A61": "2004", "47BB": "1909", "47BA": "1903", "4563": "1809", "42EE": "1803", "3FAB": "1709", "3AD7": "1703", "3839": "1607", "295A": "1511", "2800": "1507"}
@@ -32,6 +48,12 @@ if platformType == "Windows":
         def __exit__(self, type, value, traceback):
             if self.success:
                 self._revert(self.old_value)
+
+if platformType != "Windows":
+    class disable_file_system_redirection:
+        """No-op stub for non-Windows platforms."""
+        def __enter__(self): pass
+        def __exit__(self, *args): pass
 
 # PROCESS_BASE = 0x14000000
 # PEB_ADDR = 0x11017000
@@ -779,76 +801,91 @@ def dumpAndVerifyPebLdr32(mu):
         print("")
         print("allOk",allOk)
 
-def addNew(uc, em, export_dict, source_path, save_path,newDll):  #//InitMods for single
+def addNew(uc, em, export_dict, source_path, save_path, newDll):
     global allDlls
     path32 = 'C:\\Windows\\SysWOW64\\'
     path64 = 'C:\\Windows\\System32\\'
-    mods = {}     ###  Can keep the list (mult. file format) even though this is for a single one, for ease of reusing old code
+    mods = {}
     not_found = []
 
     allDlls.append(newDll)
 
-    with disable_file_system_redirection():                       
-        if os.path.exists(source_path + newDll + ".dll"):
-            mods[newDll] = WinDLL(newDll, path32 + newDll, path64 + newDll)
-        elif os.path.exists(source_path + newDll):
-            if newDll.lower().endswith(".dll"):
-                newDll = newDll[:-4]
-            mods[newDll] = WinDLL(newDll, path32 + newDll, path64 + newDll)
+    if platformType == "Windows":
+        with disable_file_system_redirection():
+            if os.path.exists(source_path + newDll + ".dll"):
+                mods[newDll] = WinDLL(newDll, path32 + newDll, path64 + newDll)
+            elif os.path.exists(source_path + newDll):
+                if newDll.lower().endswith(".dll"):
+                    newDll = newDll[:-4]
+                mods[newDll] = WinDLL(newDll, path32 + newDll, path64 + newDll)
+            else:
+                not_found.append(newDll)
+    else:
+        # Linux: normalize case before lookup - filesystem is case-sensitive
+        dll_name_lower = newDll.lower()
+        dll_file = dll_name_lower + ".dll"
+        save_ci = {f.lower(): f for f in os.listdir(save_path)}
+        if dll_file.lower() in save_ci:
+            mods[dll_name_lower] = WinDLL(dll_name_lower, path32 + dll_name_lower, path64 + dll_name_lower)
         else:
             not_found.append(newDll)
 
     for n in not_found:
         allDlls.remove(n)
 
+    export_dict, mods, mod_high_val, newBase = iter_and_dump_single_dll(
+        uc, em, export_dict, source_path, save_path, mods)
 
-####need to work on this part now!!!!
-    export_dict, mods, mod_high_val, newBase = iter_and_dump_single_dll(uc, em, export_dict, source_path, save_path, mods)
-    # print ("we are done2", hex(newBase))
-
-    return mods, export_dict, mod_high_val,newBase
+    return mods, export_dict, mod_high_val, newBase
 
 
-def iter_and_dump_single_dll (mu, em, export_dict, source_path, save_path, mods):
+def iter_and_dump_single_dll(mu, em, export_dict, source_path, save_path, mods):
     global MOD_LOW, baseGlobal
-    ###  Can keep the list (mult. file format) even though this is for a single one, for ease of reusing old code
     for dll_name in mods:
         dll_file = dll_name + '.dll'
 
-
         allDllsDict[dll_file] = baseGlobal
         mods[dll_name].base = baseGlobal
-        newBase=baseGlobal
+        newBase = baseGlobal
+
         if platformType == "Windows":
             with disable_file_system_redirection():
-                if os.path.exists(source_path+dll_file) == False:
+                if os.path.exists(source_path + dll_file) == False:
                     continue
 
-        if os.path.exists(save_path+dll_file) and 2==23:  ###SKIP THIS FOR NOW
-            rawDll = readRaw(save_path + dll_file)
+        _dll_path = _ci_path(save_path, dll_file)
+        if _dll_path:
+            rawDll = readRaw(_dll_path)
+            # Parse exports from original source file (not inflated copy)
+            _src_path = _ci_path(source_path, dll_file) if platformType == "Windows" else _dll_path
+            try:
+                pe = pefile.PE(_dll_path, fast_load=True)
+                pe.parse_data_directories(
+                    directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
+                if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                    for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                        try:
+                            export_dict[hex(baseGlobal + exp.address)] = (exp.name.decode(), dll_file)
+                        except:
+                            export_dict[hex(baseGlobal + exp.address)] = ("unknown_function", dll_file)
+            except Exception as e:
+                pass
 
-        # Inflate dlls so PE offsets are correct
         elif platformType == "Windows":
-            # if not runOnce:
-            print("Warning: DLL must be parsed and inflated from a Windows OS.\n\tThis may take a moment to parse "+dll_name+" .")
-            # runOnce = True
-
+            print("Warning: DLL must be parsed and inflated from a Windows OS.\n\tThis may take a moment to parse " + dll_name + " .")
             dllPath = source_path + dll_file
             rawDll, padding = padDLL(dllPath, dll_file, save_path)
-
             with disable_file_system_redirection():
-                # pe = pefile.PE(source_path+dll_file)
-                pe = pefile.PE(source_path+dll_file, fast_load=True)
-                pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
-
+                pe = pefile.PE(source_path + dll_file, fast_load=True)
+                pe.parse_data_directories(
+                    directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
             for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
                 try:
-                    # print("exp",exp)
                     export_dict[hex(baseGlobal + exp.address)] = (exp.name.decode(), dll_file)
                 except:
                     export_dict[hex(baseGlobal + exp.address)] = ("unknown_function", dll_file)
         else:
-            newBase=0
+            newBase = 0
             continue
 
         # Dump the dll into emulation memory
@@ -856,8 +893,7 @@ def iter_and_dump_single_dll (mu, em, export_dict, source_path, save_path, mods)
         baseGlobal += len(rawDll) + 20
 
     mod_high_val = baseGlobal
-    # print ("we are done1", hex(newBase))
-    return export_dict, mods, mod_high_val,newBase
+    return export_dict, mods, mod_high_val, newBase
 
 
 baseGlobal = 0x14100000
@@ -872,28 +908,40 @@ def iter_and_dump_dlls(mu, em, export_dict, source_path, save_path, mods):
 
         allDllsDict[dll_file] = baseGlobal
         mods[dll_name].base = baseGlobal
+
         if platformType == "Windows":
             with disable_file_system_redirection():
-                if os.path.exists(source_path+dll_file) == False:
+                if os.path.exists(source_path + dll_file) == False:
                     continue
 
-        if os.path.exists(save_path+dll_file):
-            rawDll = readRaw(save_path + dll_file)
+        _dll_path = _ci_path(save_path, dll_file)
+        if _dll_path:
+            rawDll = readRaw(_dll_path)
+            # Parse exports on Linux (Windows path already handled below)
+            if platformType != "Windows":
+                try:
+                    pe = pefile.PE(_dll_path, fast_load=True)
+                    pe.parse_data_directories(
+                        directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
+                    if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                        for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                            try:
+                                export_dict[hex(baseGlobal + exp.address)] = (exp.name.decode(), dll_file)
+                            except:
+                                export_dict[hex(baseGlobal + exp.address)] = ("unknown_function", dll_file)
+                except Exception:
+                    pass
 
-        # Inflate dlls so PE offsets are correct
         elif platformType == "Windows":
             if not runOnce:
                 print("Warning: DLLs must be parsed and inflated from a Windows OS.\n\tThis may take several minutes to generate the initial emulation files.\n\tThis initial step must be completed only once from a Windows machine.\n\tThe emulation will not work without these.")
                 runOnce = True
-
             dllPath = source_path + dll_file
             rawDll, padding = padDLL(dllPath, dll_file, save_path)
-
             with disable_file_system_redirection():
-                # pe = pefile.PE(source_path+dll_file)
-                pe = pefile.PE(source_path+dll_file, fast_load=True)
-                pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
-
+                pe = pefile.PE(source_path + dll_file, fast_load=True)
+                pe.parse_data_directories(
+                    directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT']])
             for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
                 try:
                     export_dict[hex(baseGlobal + exp.address)] = (exp.name.decode(), dll_file)
@@ -978,8 +1026,6 @@ def saveDLLAddsToFile(foundDLLAddrs, export_dict):
         #                 json.dump(newRecord, out)
 
 def initMods(uc, em, export_dict, source_path, save_path):
-    # print ("export_dict size2", len(export_dict))
-
     global allDlls
     allDlls = ["ntdll", "kernel32", "KernelBase", "advapi32", "comctl32", "comdlg32", "gdi32", "gdiplus", "imm32",
                "mscoree", "msvcrt", "netapi32", "ole32", "oleaut32", "shell32", "shlwapi", "urlmon", "user32",
@@ -990,12 +1036,20 @@ def initMods(uc, em, export_dict, source_path, save_path):
     mods = {}
     not_found = []
 
-    for dll_name in allDlls:
+    if platformType == "Windows":
+        for dll_name in allDlls:
             with disable_file_system_redirection():
                 if os.path.exists(source_path + dll_name + ".dll"):
                     mods[dll_name] = WinDLL(dll_name, path32+dll_name, path64+dll_name)
                 else:
                     not_found.append(dll_name)
+    else:
+        # On Linux: DLLs are pre-inflated in save_path - check there instead
+        for dll_name in allDlls:
+            if os.path.exists(os.path.join(save_path, dll_name + ".dll")):
+                mods[dll_name] = WinDLL(dll_name, path32+dll_name, path64+dll_name)
+            else:
+                not_found.append(dll_name)
 
     for n in not_found:
         allDlls.remove(n)
