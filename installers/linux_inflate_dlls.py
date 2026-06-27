@@ -7,8 +7,8 @@ Linux. The JSON files must use the same DLL load order as SHAREM on Windows.
 
 Usage example:
     python3 linux_inflate_dlls.py \
-        --src-x86 /tmp/raw_dlls/x86/ \
-        --src-x64 /tmp/raw_dlls/x64/ \
+        --src-x86 /tmp/raw_dlls/SysWOW64/ \
+        --src-x64 /tmp/raw_dlls/System32/ \
         --out-x86 ~/git/sharem/sharem/sharem/sharem/DLLs/x86/ \
         --out-x64 ~/git/sharem/sharem/sharem/sharem/DLLs/x64/ \
         --json-dir ~/git/sharem/sharem/sharem/sharem/
