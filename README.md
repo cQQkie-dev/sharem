@@ -1,3 +1,28 @@
+# Functional changes of this fork
+
+## Added Linux setup helpers
+* Added `installers/linux_inflate.py` to help with the inflation / memory mapping part done on Windows for equivalent setup on Linux
+* to use:
+    1. pull `Windows/System32` and `Windows/SysWOW64` folders from a Windows VM (or their respective DLL's)
+    2. example for Windows VM called `win10` under **qemu/kvm** using **Virtual Machine Manager**:
+    ```
+    sudo virt-copy-out -d win10 -r "/Windows/System32" /tmp/raw_dlls/
+    sudo virt-copy-out -d win10 -r "/Windows/SysWOW64" /tmp/raw_dlls/
+    ```
+    3. you will then have the 2 folders:
+    ```
+    /tmp/raw_dlls/System32
+    /tmp/raw_dlls/SysWOW64
+    ```
+    with the Windows DLL's and drivers etc. These are only needed for the one time inflation process (which can take a couple of minutes), but later then be removed again as most of these are not needed anymore (or you can keep some around for later additions, the inflation script tries to add all the DLL's that where added in the latest update of the project)
+    4. for the 300+ parsed DLL's that are currently added in project you can expect inflation to have a size of around `~300MB`
+* `modules.py` file was changed accordingly to work with linux environments as well
+
+## Some bug fixes:
+* fixed some string decoding for WCHARS that were not printing results correctly
+* added `ExpandEnvironmentStringsW` and made `URLDownloadToFileW` robust (this are quite random as I needed them when playing with a specific sample)
+* confirmed to be working (tested ad hoc only on one specific sample, other bugs might require more extensive fixes)
+
 # SHAREM
 
 Welcome to SHAREM! 
